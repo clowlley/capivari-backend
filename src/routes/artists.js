@@ -2,6 +2,7 @@ const router = require('express').Router();
 const db = require('../db/index');
 const authenticate = require('../middleware/authenticate');
 const upload = require('../middleware/upload');
+const { uploadFile } = require('../lib/cloudinary');
 
 const artistUpload = upload.fields([
   { name: 'cover_image_file', maxCount: 1 },
@@ -53,6 +54,9 @@ router.post('/admin', authenticate, artistUpload, async (req, res) => {
     const photoFiles = req.files?.photo_files || [];
     const featuredVal = featured === 'true' || featured === true;
 
+    const coverUrl = coverFile ? await uploadFile(coverFile) : null;
+    const profileUrl = profileFile ? await uploadFile(profileFile) : null;
+
     const { rows } = await db.query(
       `INSERT INTO artists (name, project_name, age, musical_styles, presskit_url, career_years, biography, status, featured, cover_image, profile_image)
        VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11) RETURNING *`,
@@ -66,15 +70,16 @@ router.post('/admin', authenticate, artistUpload, async (req, res) => {
         biography || null,
         status || 'draft',
         featuredVal,
-        coverFile ? `/uploads/${coverFile.filename}` : null,
-        profileFile ? `/uploads/${profileFile.filename}` : null,
+        coverUrl,
+        profileUrl,
       ]
     );
 
     const artist = rows[0];
 
     for (const file of photoFiles) {
-      await db.query('INSERT INTO artist_photos (artist_id, image) VALUES ($1, $2)', [artist.id, `/uploads/${file.filename}`]);
+      const photoUrl = await uploadFile(file);
+      await db.query('INSERT INTO artist_photos (artist_id, image) VALUES ($1, $2)', [artist.id, photoUrl]);
     }
 
     const { rows: full } = await db.query(
@@ -102,8 +107,8 @@ router.put('/admin/:id', authenticate, artistUpload, async (req, res) => {
     const existing = await db.query('SELECT cover_image, profile_image FROM artists WHERE id=$1', [id]);
     const prev = existing.rows[0] || {};
 
-    const coverUrl = coverFile ? `/uploads/${coverFile.filename}` : (prev.cover_image || null);
-    const profileUrl = profileFile ? `/uploads/${profileFile.filename}` : (prev.profile_image || null);
+    const coverUrl = coverFile ? await uploadFile(coverFile) : (prev.cover_image || null);
+    const profileUrl = profileFile ? await uploadFile(profileFile) : (prev.profile_image || null);
 
     const { rows } = await db.query(
       `UPDATE artists SET name=$1, project_name=$2, age=$3, musical_styles=$4, presskit_url=$5, career_years=$6,
@@ -130,7 +135,8 @@ router.put('/admin/:id', authenticate, artistUpload, async (req, res) => {
     const photoCount = await db.query('SELECT COUNT(*)::int AS count FROM artist_photos WHERE artist_id=$1', [id]);
     const remaining = 4 - Number(photoCount.rows[0].count);
     for (const file of photoFiles.slice(0, remaining)) {
-      await db.query('INSERT INTO artist_photos (artist_id, image) VALUES ($1, $2)', [id, `/uploads/${file.filename}`]);
+      const photoUrl = await uploadFile(file);
+      await db.query('INSERT INTO artist_photos (artist_id, image) VALUES ($1, $2)', [id, photoUrl]);
     }
 
     const { rows: full } = await db.query(

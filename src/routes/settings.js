@@ -2,6 +2,7 @@ const router = require('express').Router();
 const db = require('../db/index');
 const authenticate = require('../middleware/authenticate');
 const upload = require('../middleware/upload');
+const { uploadFile } = require('../lib/cloudinary');
 
 // Público — ler uma configuração
 router.get('/:key', async (req, res) => {
@@ -19,7 +20,7 @@ router.put('/admin/:key', authenticate, upload.single('video_file'), async (req,
   try {
     const { key } = req.params;
     const { value } = req.body;
-    const fileUrl = req.file ? `/uploads/${req.file.filename}` : null;
+    const fileUrl = req.file ? await uploadFile(req.file) : null;
     const finalValue = fileUrl || value || null;
 
     await db.query(

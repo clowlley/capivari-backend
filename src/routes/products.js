@@ -2,6 +2,7 @@ const router = require('express').Router();
 const db = require('../db/index');
 const authenticate = require('../middleware/authenticate');
 const upload = require('../middleware/upload');
+const { uploadFile } = require('../lib/cloudinary');
 
 // Público
 router.get('/', async (req, res) => {
@@ -43,7 +44,7 @@ router.get('/admin', authenticate, async (req, res) => {
 router.post('/admin', authenticate, upload.single('cover_image_file'), async (req, res) => {
   try {
     const { title, description, full_content, cover_image, category, price, stock, status, featured, whatsapp } = req.body;
-    const imageUrl = req.file ? `/uploads/${req.file.filename}` : (cover_image || null);
+    const imageUrl = req.file ? await uploadFile(req.file) : (cover_image || null);
     const { rows } = await db.query(
       `INSERT INTO products (title, description, full_content, cover_image, category, price, stock, status, featured, whatsapp)
        VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10) RETURNING *`,
@@ -62,7 +63,7 @@ router.put('/admin/:id', authenticate, upload.single('cover_image_file'), async 
     const { title, description, full_content, cover_image, category, price, stock, status, featured, whatsapp } = req.body;
     let imageUrl = cover_image || null;
     if (req.file) {
-      imageUrl = `/uploads/${req.file.filename}`;
+      imageUrl = await uploadFile(req.file);
     } else if (!imageUrl) {
       const ex = await db.query('SELECT cover_image FROM products WHERE id=$1', [id]);
       imageUrl = ex.rows[0]?.cover_image || null;

@@ -2,6 +2,7 @@ const router = require('express').Router();
 const db = require('../db/index');
 const authenticate = require('../middleware/authenticate');
 const upload = require('../middleware/upload');
+const { uploadFile } = require('../lib/cloudinary');
 
 function slugify(str) {
   return String(str || '')
@@ -92,8 +93,8 @@ router.post('/admin', authenticate, projectUpload, async (req, res) => {
     const { title, description, full_content, cover_image, video_url, category, status, featured } = req.body;
     const imageFile = req.files?.cover_image_file?.[0];
     const videoFile = req.files?.video_file?.[0];
-    const imageUrl = imageFile ? `/uploads/${imageFile.filename}` : (cover_image || null);
-    const videoFinalUrl = videoFile ? `/uploads/${videoFile.filename}` : (video_url || null);
+    const imageUrl = imageFile ? await uploadFile(imageFile) : (cover_image || null);
+    const videoFinalUrl = videoFile ? await uploadFile(videoFile) : (video_url || null);
     const featuredVal = featured === 'true' || featured === true;
 
     const { rows } = await db.query(
@@ -120,7 +121,7 @@ router.put('/admin/:id', authenticate, projectUpload, async (req, res) => {
 
     let imageUrl = cover_image || null;
     if (imageFile) {
-      imageUrl = `/uploads/${imageFile.filename}`;
+      imageUrl = await uploadFile(imageFile);
     } else if (!imageUrl) {
       const existing = await db.query('SELECT cover_image FROM projects WHERE id=$1', [id]);
       imageUrl = existing.rows[0]?.cover_image || null;
@@ -128,7 +129,7 @@ router.put('/admin/:id', authenticate, projectUpload, async (req, res) => {
 
     let videoFinalUrl = video_url || null;
     if (videoFile) {
-      videoFinalUrl = `/uploads/${videoFile.filename}`;
+      videoFinalUrl = await uploadFile(videoFile);
     } else if (!videoFinalUrl) {
       const existing = await db.query('SELECT video_url FROM projects WHERE id=$1', [id]);
       videoFinalUrl = existing.rows[0]?.video_url || null;

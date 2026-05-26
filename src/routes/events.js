@@ -2,6 +2,7 @@ const router = require('express').Router();
 const db = require('../db/index');
 const authenticate = require('../middleware/authenticate');
 const upload = require('../middleware/upload');
+const { uploadFile } = require('../lib/cloudinary');
 
 function slugify(str) {
   return String(str || '')
@@ -83,7 +84,7 @@ router.get('/admin/list', authenticate, async (req, res) => {
 router.post('/admin', authenticate, upload.single('cover_image_file'), async (req, res) => {
   try {
     const { title, description, full_content, cover_image, category, location_name, location_address, starts_at, ends_at, event_type, status, featured, registration_url, max_attendees, price } = req.body;
-    const cover_image_final = req.file ? `/uploads/${req.file.filename}` : (cover_image || null);
+    const cover_image_final = req.file ? await uploadFile(req.file) : (cover_image || null);
     const { rows } = await db.query(
       `INSERT INTO events (title, description, full_content, cover_image, category, location_name, location_address, starts_at, ends_at, event_type, status, featured, registration_url, max_attendees, price)
        VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15) RETURNING *`,
@@ -117,7 +118,7 @@ router.put('/admin/:id', authenticate, upload.single('cover_image_file'), async 
     const { id } = req.params;
     const { title, description, full_content, cover_image, category, location_name, location_address, starts_at, ends_at, event_type, status, featured, registration_url, max_attendees, price } = req.body;
     let cover_image_final = cover_image || null;
-    if (req.file) cover_image_final = `/uploads/${req.file.filename}`;
+    if (req.file) cover_image_final = await uploadFile(req.file);
     const { rows } = await db.query(
       `UPDATE events SET title=$1, description=$2, full_content=$3, cover_image=$4, category=$5, location_name=$6, location_address=$7, starts_at=$8, ends_at=$9, event_type=$10, status=$11, featured=$12, registration_url=$13, max_attendees=$14, price=$15, updated_at=NOW()
        WHERE id=$16 RETURNING *`,

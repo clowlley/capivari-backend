@@ -2,6 +2,7 @@ const router = require('express').Router();
 const db = require('../db/index');
 const authenticate = require('../middleware/authenticate');
 const upload = require('../middleware/upload');
+const { uploadFile } = require('../lib/cloudinary');
 
 // GET /api/gallery/albums (Público)
 router.get('/albums', async (req, res) => {
@@ -22,7 +23,7 @@ router.get('/albums', async (req, res) => {
 router.post('/admin/albums', authenticate, upload.single('cover_image_file'), async (req, res) => {
   try {
     const { title, event_id, cover_image } = req.body;
-    const cover = req.file ? `/uploads/${req.file.filename}` : (cover_image || null);
+    const cover = req.file ? await uploadFile(req.file) : (cover_image || null);
 
     const { rows } = await db.query(
       'INSERT INTO albums (title, event_id, cover_image) VALUES ($1, $2, $3) RETURNING *',
@@ -84,9 +85,10 @@ router.post('/admin/bulk', authenticate, upload.array('image_files', 100), async
     }
     const results = [];
     for (const file of req.files) {
+      const imageUrl = await uploadFile(file);
       const { rows } = await db.query(
         'INSERT INTO gallery (title, image, album_id) VALUES ($1, $2, $3) RETURNING *',
-        ['', `/uploads/${file.filename}`, album_id || null]
+        ['', imageUrl, album_id || null]
       );
       results.push(rows[0]);
     }
@@ -106,7 +108,7 @@ router.post('/admin', authenticate, upload.single('image_file'), async (req, res
       return res.status(400).json({ error: 'Nenhuma imagem enviada' });
     }
 
-    const image_url = `/uploads/${req.file.filename}`;
+    const image_url = await uploadFile(req.file);
 
     const { rows } = await db.query(
       'INSERT INTO gallery (title, image, album_id) VALUES ($1, $2, $3) RETURNING *',
