@@ -4,89 +4,167 @@ const authenticate = require('../middleware/authenticate');
 const upload = require('../middleware/upload');
 const { uploadFile } = require('../lib/cloudinary');
 
-// Público
+const MAX_PHOTOS = 50;
+
+const productUpload = upload.fields([
+  { name: 'cover_image_file', maxCount: 1 },
+  { name: 'photo_files', maxCount: MAX_PHOTOS },
+]);
+
+// SELECT com fotos agregadas em array
+const SELECT_WITH_PHOTOS = `
+  SELECT p.*,
+         COALESCE(
+           json_agg(json_build_object('id', pp.id, 'image', pp.image) ORDER BY pp.created_at)
+             FILTER (WHERE pp.id IS NOT NULL),
+           '[]'
+         ) AS photos
+  FROM products p
+  LEFT JOIN product_photos pp ON pp.product_id = p.id
+`;
+
+// ── Público: listar ────────────────────────────────────────────
 router.get('/', async (req, res) => {
   try {
     const limit = Number(req.query.limit || 12);
     const { rows } = await db.query(
-      `SELECT * FROM products WHERE status = 'published' ORDER BY featured DESC, created_at DESC LIMIT $1`,
+      `${SELECT_WITH_PHOTOS}
+       WHERE p.status = 'published'
+       GROUP BY p.id
+       ORDER BY p.featured DESC, p.created_at DESC
+       LIMIT $1`,
       [limit]
     );
     res.json({ data: rows, total: rows.length });
-  } catch (err) {
+  } catch {
     res.status(500).json({ error: 'Erro ao buscar produtos.' });
   }
 });
 
+// ── Público: detalhe ───────────────────────────────────────────
 router.get('/id/:id', async (req, res) => {
   try {
     const { rows } = await db.query(
-      `SELECT * FROM products WHERE id = $1 AND status = 'published'`,
+      `${SELECT_WITH_PHOTOS}
+       WHERE p.id = $1 AND p.status = 'published'
+       GROUP BY p.id`,
       [req.params.id]
     );
     if (!rows.length) return res.status(404).json({ error: 'Produto não encontrado.' });
     res.json(rows[0]);
-  } catch (err) {
+  } catch {
     res.status(500).json({ error: 'Erro ao buscar produto.' });
   }
 });
 
-// Admin
+// ── Admin: listar ──────────────────────────────────────────────
 router.get('/admin', authenticate, async (req, res) => {
   try {
-    const { rows } = await db.query('SELECT * FROM products ORDER BY created_at DESC');
+    const { rows } = await db.query(
+      `${SELECT_WITH_PHOTOS}
+       GROUP BY p.id
+       ORDER BY p.created_at DESC`
+    );
     res.json(rows);
-  } catch (err) {
+  } catch {
     res.status(500).json({ error: 'Erro ao buscar produtos.' });
   }
 });
 
-router.post('/admin', authenticate, upload.single('cover_image_file'), async (req, res) => {
+// ── Admin: criar ───────────────────────────────────────────────
+router.post('/admin', authenticate, productUpload, async (req, res) => {
   try {
     const { title, description, full_content, cover_image, category, price, stock, status, featured, whatsapp } = req.body;
-    const imageUrl = req.file ? await uploadFile(req.file) : (cover_image || null);
+    const coverFile = req.files?.cover_image_file?.[0];
+    const photoFiles = req.files?.photo_files || [];
+
+    const imageUrl = coverFile ? await uploadFile(coverFile) : (cover_image || null);
+
     const { rows } = await db.query(
       `INSERT INTO products (title, description, full_content, cover_image, category, price, stock, status, featured, whatsapp)
-       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10) RETURNING *`,
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10) RETURNING id`,
       [title, description, full_content || null, imageUrl, category || null,
        parseFloat(price) || 0, parseInt(stock) || 0, status || 'draft', !!featured, whatsapp || null]
     );
-    res.status(201).json(rows[0]);
+    const productId = rows[0].id;
+
+    for (const file of photoFiles) {
+      const url = await uploadFile(file);
+      await db.query('INSERT INTO product_photos (product_id, image) VALUES ($1, $2)', [productId, url]);
+    }
+
+    const { rows: full } = await db.query(
+      `${SELECT_WITH_PHOTOS} WHERE p.id=$1 GROUP BY p.id`,
+      [productId]
+    );
+    res.status(201).json(full[0]);
   } catch (err) {
+    console.error('Erro ao criar produto:', err);
     res.status(500).json({ error: 'Erro ao criar produto.' });
   }
 });
 
-router.put('/admin/:id', authenticate, upload.single('cover_image_file'), async (req, res) => {
+// ── Admin: atualizar ───────────────────────────────────────────
+router.put('/admin/:id', authenticate, productUpload, async (req, res) => {
   try {
     const { id } = req.params;
     const { title, description, full_content, cover_image, category, price, stock, status, featured, whatsapp } = req.body;
+    const coverFile = req.files?.cover_image_file?.[0];
+    const photoFiles = req.files?.photo_files || [];
+
     let imageUrl = cover_image || null;
-    if (req.file) {
-      imageUrl = await uploadFile(req.file);
+    if (coverFile) {
+      imageUrl = await uploadFile(coverFile);
     } else if (!imageUrl) {
       const ex = await db.query('SELECT cover_image FROM products WHERE id=$1', [id]);
       imageUrl = ex.rows[0]?.cover_image || null;
     }
-    const { rows } = await db.query(
+
+    const upd = await db.query(
       `UPDATE products SET title=$1, description=$2, full_content=$3, cover_image=$4, category=$5,
        price=$6, stock=$7, status=$8, featured=$9, whatsapp=$10, updated_at=NOW()
-       WHERE id=$11 RETURNING *`,
+       WHERE id=$11 RETURNING id`,
       [title, description, full_content || null, imageUrl, category || null,
        parseFloat(price) || 0, parseInt(stock) || 0, status || 'draft', !!featured, whatsapp || null, id]
     );
-    if (!rows.length) return res.status(404).json({ error: 'Produto não encontrado.' });
-    res.json(rows[0]);
+    if (!upd.rows.length) return res.status(404).json({ error: 'Produto não encontrado.' });
+
+    if (photoFiles.length > 0) {
+      const count = await db.query('SELECT COUNT(*)::int AS count FROM product_photos WHERE product_id=$1', [id]);
+      const remaining = MAX_PHOTOS - Number(count.rows[0].count);
+      for (const file of photoFiles.slice(0, remaining)) {
+        const url = await uploadFile(file);
+        await db.query('INSERT INTO product_photos (product_id, image) VALUES ($1, $2)', [id, url]);
+      }
+    }
+
+    const { rows: full } = await db.query(
+      `${SELECT_WITH_PHOTOS} WHERE p.id=$1 GROUP BY p.id`,
+      [id]
+    );
+    res.json(full[0]);
   } catch (err) {
+    console.error('Erro ao atualizar produto:', err);
     res.status(500).json({ error: 'Erro ao atualizar produto.' });
   }
 });
 
+// ── Admin: deletar foto extra ──────────────────────────────────
+router.delete('/admin/photos/:photoId', authenticate, async (req, res) => {
+  try {
+    await db.query('DELETE FROM product_photos WHERE id=$1', [req.params.photoId]);
+    res.status(204).send();
+  } catch {
+    res.status(500).json({ error: 'Erro ao excluir foto.' });
+  }
+});
+
+// ── Admin: excluir produto ─────────────────────────────────────
 router.delete('/admin/:id', authenticate, async (req, res) => {
   try {
     await db.query('DELETE FROM products WHERE id = $1', [req.params.id]);
     res.status(204).send();
-  } catch (err) {
+  } catch {
     res.status(500).json({ error: 'Erro ao excluir produto.' });
   }
 });

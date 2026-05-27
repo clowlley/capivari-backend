@@ -148,6 +148,16 @@ async function initializeDatabase() {
     )
   `);
 
+  // Product Photos (galeria de demonstração)
+  await db.query(`
+    CREATE TABLE IF NOT EXISTS product_photos (
+      id SERIAL PRIMARY KEY,
+      product_id INTEGER REFERENCES products(id) ON DELETE CASCADE,
+      image TEXT NOT NULL,
+      created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
+    )
+  `);
+
   // Projects
   await db.query(`
     CREATE TABLE IF NOT EXISTS projects (
