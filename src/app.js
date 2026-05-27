@@ -70,7 +70,6 @@ app.use('/api/displays', require('./routes/displays'));
 app.get('/api/ping', (req, res) => res.json({ message: 'pong' }));
 
 // Error handler global — captura erros do multer/cloudinary que escapam dos handlers
-// eslint-disable-next-line no-unused-vars
 app.use((err, req, res, _next) => {
   console.error('[global error]', err?.code, err?.field, err?.message);
   if (err?.code === 'LIMIT_FILE_SIZE') {
