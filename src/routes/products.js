@@ -88,7 +88,7 @@ router.post('/admin', authenticate, productUpload, async (req, res) => {
       `INSERT INTO products (title, description, full_content, cover_image, category, price, stock, status, featured, whatsapp)
        VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10) RETURNING id`,
       [title, description, full_content || null, imageUrl, category || null,
-       parseFloat(price) || 0, parseInt(stock) || 0, status || 'draft', !!featured, whatsapp || null]
+       parseFloat(price) || 0, parseInt(stock) || 0, status || 'draft', featured === 'true' || featured === true, whatsapp || null]
     );
     const productId = rows[0].id;
 
@@ -128,7 +128,7 @@ router.put('/admin/:id', authenticate, productUpload, async (req, res) => {
        price=$6, stock=$7, status=$8, featured=$9, whatsapp=$10, updated_at=NOW()
        WHERE id=$11 RETURNING id`,
       [title, description, full_content || null, imageUrl, category || null,
-       parseFloat(price) || 0, parseInt(stock) || 0, status || 'draft', !!featured, whatsapp || null, id]
+       parseFloat(price) || 0, parseInt(stock) || 0, status || 'draft', featured === 'true' || featured === true, whatsapp || null, id]
     );
     if (!upd.rows.length) return res.status(404).json({ error: 'Produto não encontrado.' });
 
