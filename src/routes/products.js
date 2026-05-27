@@ -6,10 +6,15 @@ const { uploadFile } = require('../lib/cloudinary');
 
 const MAX_PHOTOS = 50;
 
-const productUpload = upload.fields([
-  { name: 'cover_image_file', maxCount: 1 },
-  { name: 'photo_files', maxCount: MAX_PHOTOS },
-]);
+// Aceita qualquer fieldname; filtramos manualmente por cover_image_file e photo_files
+const productUpload = upload.any();
+
+function splitFiles(req) {
+  const all = req.files || [];
+  const coverFile = all.find((f) => f.fieldname === 'cover_image_file');
+  const photoFiles = all.filter((f) => f.fieldname === 'photo_files').slice(0, MAX_PHOTOS);
+  return { coverFile, photoFiles };
+}
 
 // SELECT com fotos agregadas em array
 const SELECT_WITH_PHOTOS = `
@@ -75,8 +80,7 @@ router.get('/admin', authenticate, async (req, res) => {
 router.post('/admin', authenticate, productUpload, async (req, res) => {
   try {
     const { title, description, full_content, cover_image, category, price, stock, status, featured, whatsapp } = req.body;
-    const coverFile = req.files?.cover_image_file?.[0];
-    const photoFiles = req.files?.photo_files || [];
+    const { coverFile, photoFiles } = splitFiles(req);
 
     const imageUrl = coverFile ? await uploadFile(coverFile) : (cover_image || null);
 
@@ -109,8 +113,7 @@ router.put('/admin/:id', authenticate, productUpload, async (req, res) => {
   try {
     const { id } = req.params;
     const { title, description, full_content, cover_image, category, price, stock, status, featured, whatsapp } = req.body;
-    const coverFile = req.files?.cover_image_file?.[0];
-    const photoFiles = req.files?.photo_files || [];
+    const { coverFile, photoFiles } = splitFiles(req);
 
     let imageUrl = cover_image || null;
     if (coverFile) {
