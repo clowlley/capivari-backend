@@ -220,6 +220,15 @@ async function initializeDatabase() {
       created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
     )
   `);
+  await db.query(`
+    CREATE TABLE IF NOT EXISTS artist_tracks (
+      id SERIAL PRIMARY KEY,
+      artist_id INTEGER REFERENCES artists(id) ON DELETE CASCADE,
+      audio_url TEXT NOT NULL,
+      title VARCHAR(200),
+      created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
+    )
+  `);
 
   // NLista (Credenciamento)
   await db.query(`

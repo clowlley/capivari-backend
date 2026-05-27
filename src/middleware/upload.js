@@ -4,11 +4,14 @@ const path = require('path');
 const ALLOWED_EXT = new Set([
   '.jpg', '.jpeg', '.png', '.webp', '.gif',
   '.mp4', '.mov', '.webm',
+  '.mp3', '.wav', '.m4a', '.ogg', '.aac',
 ]);
 
 const ALLOWED_MIME = new Set([
   'image/jpeg', 'image/png', 'image/webp', 'image/gif',
   'video/mp4', 'video/quicktime', 'video/webm',
+  'audio/mpeg', 'audio/mp3', 'audio/wav', 'audio/wave', 'audio/x-wav',
+  'audio/mp4', 'audio/x-m4a', 'audio/ogg', 'audio/aac',
 ]);
 
 const MAX_FILE_SIZE = 25 * 1024 * 1024; // 25MB

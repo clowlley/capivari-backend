@@ -6,6 +6,7 @@ const { uploadFile } = require('../lib/cloudinary');
 
 const MAX_PHOTOS = 4;
 const MAX_VIDEOS = 10;
+const MAX_TRACKS = 20;
 
 // Aceita qualquer fieldname; filtra manualmente
 const artistUpload = upload.any();
@@ -17,6 +18,7 @@ function splitFiles(req) {
     profileFile: all.find((f) => f.fieldname === 'profile_image_file'),
     photoFiles: all.filter((f) => f.fieldname === 'photo_files').slice(0, MAX_PHOTOS),
     videoFiles: all.filter((f) => f.fieldname === 'video_files').slice(0, MAX_VIDEOS),
+    trackFiles: all.filter((f) => f.fieldname === 'track_files').slice(0, MAX_TRACKS),
   };
 }
 
@@ -31,7 +33,12 @@ const SELECT_WITH_MEDIA = `
            (SELECT json_agg(json_build_object('id', av.id, 'video_url', av.video_url) ORDER BY av.created_at)
             FROM artist_videos av WHERE av.artist_id = a.id),
            '[]'
-         ) AS videos
+         ) AS videos,
+         COALESCE(
+           (SELECT json_agg(json_build_object('id', at.id, 'audio_url', at.audio_url, 'title', at.title) ORDER BY at.created_at)
+            FROM artist_tracks at WHERE at.artist_id = a.id),
+           '[]'
+         ) AS tracks
   FROM artists a
 `;
 
@@ -83,11 +90,25 @@ async function uploadAndInsertVideos(artistId, files) {
   }
 }
 
+async function uploadAndInsertTracks(artistId, files) {
+  for (let i = 0; i < files.length; i++) {
+    try {
+      const file = files[i];
+      const url = await uploadFile(file);
+      // Usa o nome do arquivo (sem extensão) como título inicial
+      const title = (file.originalname || `Faixa ${i + 1}`).replace(/\.[^.]+$/, '').slice(0, 200);
+      await db.query('INSERT INTO artist_tracks (artist_id, audio_url, title) VALUES ($1, $2, $3)', [artistId, url, title]);
+    } catch (err) {
+      console.error(`[artists] FALHA track ${i + 1}:`, err?.message);
+    }
+  }
+}
+
 // ── Admin: criar ───────────────────────────────────────────────
 router.post('/admin', authenticate, artistUpload, async (req, res) => {
   try {
     const { name, project_name, age, musical_styles, presskit_url, career_years, biography, status, featured } = req.body;
-    const { coverFile, profileFile, photoFiles, videoFiles } = splitFiles(req);
+    const { coverFile, profileFile, photoFiles, videoFiles, trackFiles } = splitFiles(req);
     const featuredVal = featured === 'true' || featured === true;
 
     const coverUrl = coverFile ? await uploadFile(coverFile) : null;
@@ -115,6 +136,7 @@ router.post('/admin', authenticate, artistUpload, async (req, res) => {
 
     await uploadAndInsertPhotos(artistId, photoFiles);
     await uploadAndInsertVideos(artistId, videoFiles);
+    await uploadAndInsertTracks(artistId, trackFiles);
 
     const { rows: full } = await db.query(`${SELECT_WITH_MEDIA} WHERE a.id=$1`, [artistId]);
     res.status(201).json(full[0]);
@@ -129,7 +151,7 @@ router.put('/admin/:id', authenticate, artistUpload, async (req, res) => {
   try {
     const { id } = req.params;
     const { name, project_name, age, musical_styles, presskit_url, career_years, biography, status, featured } = req.body;
-    const { coverFile, profileFile, photoFiles, videoFiles } = splitFiles(req);
+    const { coverFile, profileFile, photoFiles, videoFiles, trackFiles } = splitFiles(req);
     const featuredVal = featured === 'true' || featured === true;
 
     const existing = await db.query('SELECT cover_image, profile_image FROM artists WHERE id=$1', [id]);
@@ -171,6 +193,12 @@ router.put('/admin/:id', authenticate, artistUpload, async (req, res) => {
       await uploadAndInsertVideos(id, videoFiles.slice(0, remaining));
     }
 
+    if (trackFiles.length > 0) {
+      const count = await db.query('SELECT COUNT(*)::int AS count FROM artist_tracks WHERE artist_id=$1', [id]);
+      const remaining = MAX_TRACKS - Number(count.rows[0].count);
+      await uploadAndInsertTracks(id, trackFiles.slice(0, remaining));
+    }
+
     const { rows: full } = await db.query(`${SELECT_WITH_MEDIA} WHERE a.id=$1`, [id]);
     res.json(full[0]);
   } catch (error) {
@@ -197,6 +225,17 @@ router.delete('/admin/videos/:videoId', authenticate, async (req, res) => {
     res.status(204).send();
   } catch (error) {
     console.error('Erro ao excluir video:', error?.message);
+    res.status(500).json({ error: 'Erro interno.' });
+  }
+});
+
+// ── Admin: excluir track individual ────────────────────────────
+router.delete('/admin/tracks/:trackId', authenticate, async (req, res) => {
+  try {
+    await db.query('DELETE FROM artist_tracks WHERE id=$1', [req.params.trackId]);
+    res.status(204).send();
+  } catch (error) {
+    console.error('Erro ao excluir track:', error?.message);
     res.status(500).json({ error: 'Erro interno.' });
   }
 });
