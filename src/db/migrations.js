@@ -212,6 +212,14 @@ async function initializeDatabase() {
       created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
     )
   `);
+  await db.query(`
+    CREATE TABLE IF NOT EXISTS artist_videos (
+      id SERIAL PRIMARY KEY,
+      artist_id INTEGER REFERENCES artists(id) ON DELETE CASCADE,
+      video_url TEXT NOT NULL,
+      created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
+    )
+  `);
 
   // NLista (Credenciamento)
   await db.query(`

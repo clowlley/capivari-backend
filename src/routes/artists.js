@@ -4,54 +4,90 @@ const authenticate = require('../middleware/authenticate');
 const upload = require('../middleware/upload');
 const { uploadFile } = require('../lib/cloudinary');
 
-const artistUpload = upload.fields([
-  { name: 'cover_image_file', maxCount: 1 },
-  { name: 'profile_image_file', maxCount: 1 },
-  { name: 'photo_files', maxCount: 4 },
-]);
+const MAX_PHOTOS = 4;
+const MAX_VIDEOS = 10;
 
-// Público
+// Aceita qualquer fieldname; filtra manualmente
+const artistUpload = upload.any();
+
+function splitFiles(req) {
+  const all = req.files || [];
+  return {
+    coverFile: all.find((f) => f.fieldname === 'cover_image_file'),
+    profileFile: all.find((f) => f.fieldname === 'profile_image_file'),
+    photoFiles: all.filter((f) => f.fieldname === 'photo_files').slice(0, MAX_PHOTOS),
+    videoFiles: all.filter((f) => f.fieldname === 'video_files').slice(0, MAX_VIDEOS),
+  };
+}
+
+const SELECT_WITH_MEDIA = `
+  SELECT a.*,
+         COALESCE(
+           (SELECT json_agg(json_build_object('id', ap.id, 'image', ap.image) ORDER BY ap.created_at)
+            FROM artist_photos ap WHERE ap.artist_id = a.id),
+           '[]'
+         ) AS photos,
+         COALESCE(
+           (SELECT json_agg(json_build_object('id', av.id, 'video_url', av.video_url) ORDER BY av.created_at)
+            FROM artist_videos av WHERE av.artist_id = a.id),
+           '[]'
+         ) AS videos
+  FROM artists a
+`;
+
+// ── Público ────────────────────────────────────────────────────
 router.get('/', async (req, res) => {
   try {
     const { rows } = await db.query(
-      `SELECT a.*, COALESCE(json_agg(json_build_object('id', ap.id, 'image', ap.image) ORDER BY ap.created_at) FILTER (WHERE ap.id IS NOT NULL), '[]') AS photos
-       FROM artists a
-       LEFT JOIN artist_photos ap ON ap.artist_id = a.id
-       WHERE a.status = 'published'
-       GROUP BY a.id
-       ORDER BY a.created_at DESC`
+      `${SELECT_WITH_MEDIA} WHERE a.status = 'published' ORDER BY a.created_at DESC`
     );
     res.json(rows);
   } catch (error) {
-    console.error('Erro ao buscar artistas:', error);
+    console.error('Erro ao buscar artistas:', error?.message);
     res.status(500).json({ error: 'Erro interno.' });
   }
 });
 
-// Admin — listar
+// ── Admin: listar ──────────────────────────────────────────────
 router.get('/admin', authenticate, async (req, res) => {
   try {
     const { rows } = await db.query(
-      `SELECT a.*, COALESCE(json_agg(json_build_object('id', ap.id, 'image', ap.image) ORDER BY ap.created_at) FILTER (WHERE ap.id IS NOT NULL), '[]') AS photos
-       FROM artists a
-       LEFT JOIN artist_photos ap ON ap.artist_id = a.id
-       GROUP BY a.id
-       ORDER BY a.created_at DESC`
+      `${SELECT_WITH_MEDIA} ORDER BY a.created_at DESC`
     );
     res.json(rows);
   } catch (error) {
-    console.error('Erro ao buscar artistas admin:', error);
+    console.error('Erro ao buscar artistas admin:', error?.message);
     res.status(500).json({ error: 'Erro interno.' });
   }
 });
 
-// Admin — criar
+async function uploadAndInsertPhotos(artistId, files) {
+  for (let i = 0; i < files.length; i++) {
+    try {
+      const url = await uploadFile(files[i]);
+      await db.query('INSERT INTO artist_photos (artist_id, image) VALUES ($1, $2)', [artistId, url]);
+    } catch (err) {
+      console.error(`[artists] FALHA foto ${i + 1}:`, err?.message);
+    }
+  }
+}
+
+async function uploadAndInsertVideos(artistId, files) {
+  for (let i = 0; i < files.length; i++) {
+    try {
+      const url = await uploadFile(files[i]);
+      await db.query('INSERT INTO artist_videos (artist_id, video_url) VALUES ($1, $2)', [artistId, url]);
+    } catch (err) {
+      console.error(`[artists] FALHA video ${i + 1}:`, err?.message);
+    }
+  }
+}
+
+// ── Admin: criar ───────────────────────────────────────────────
 router.post('/admin', authenticate, artistUpload, async (req, res) => {
   try {
     const { name, project_name, age, musical_styles, presskit_url, career_years, biography, status, featured } = req.body;
-    const coverFile = req.files?.cover_image_file?.[0];
-    const profileFile = req.files?.profile_image_file?.[0];
-    const photoFiles = req.files?.photo_files || [];
+    const { coverFile, profileFile, photoFiles, videoFiles } = splitFiles(req);
     const featuredVal = featured === 'true' || featured === true;
 
     const coverUrl = coverFile ? await uploadFile(coverFile) : null;
@@ -59,7 +95,7 @@ router.post('/admin', authenticate, artistUpload, async (req, res) => {
 
     const { rows } = await db.query(
       `INSERT INTO artists (name, project_name, age, musical_styles, presskit_url, career_years, biography, status, featured, cover_image, profile_image)
-       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11) RETURNING *`,
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11) RETURNING id`,
       [
         name,
         project_name || null,
@@ -75,45 +111,38 @@ router.post('/admin', authenticate, artistUpload, async (req, res) => {
       ]
     );
 
-    const artist = rows[0];
+    const artistId = rows[0].id;
 
-    for (const file of photoFiles) {
-      const photoUrl = await uploadFile(file);
-      await db.query('INSERT INTO artist_photos (artist_id, image) VALUES ($1, $2)', [artist.id, photoUrl]);
-    }
+    await uploadAndInsertPhotos(artistId, photoFiles);
+    await uploadAndInsertVideos(artistId, videoFiles);
 
-    const { rows: full } = await db.query(
-      `SELECT a.*, COALESCE(json_agg(json_build_object('id', ap.id, 'image', ap.image) ORDER BY ap.created_at) FILTER (WHERE ap.id IS NOT NULL), '[]') AS photos
-       FROM artists a LEFT JOIN artist_photos ap ON ap.artist_id = a.id WHERE a.id=$1 GROUP BY a.id`,
-      [artist.id]
-    );
+    const { rows: full } = await db.query(`${SELECT_WITH_MEDIA} WHERE a.id=$1`, [artistId]);
     res.status(201).json(full[0]);
   } catch (error) {
-    console.error('Erro ao criar artista:', error);
-    res.status(500).json({ error: 'Erro interno.' });
+    console.error('Erro ao criar artista:', error?.message || error);
+    res.status(500).json({ error: error?.message || 'Erro interno.' });
   }
 });
 
-// Admin — atualizar
+// ── Admin: atualizar ───────────────────────────────────────────
 router.put('/admin/:id', authenticate, artistUpload, async (req, res) => {
   try {
     const { id } = req.params;
     const { name, project_name, age, musical_styles, presskit_url, career_years, biography, status, featured } = req.body;
-    const coverFile = req.files?.cover_image_file?.[0];
-    const profileFile = req.files?.profile_image_file?.[0];
-    const photoFiles = req.files?.photo_files || [];
+    const { coverFile, profileFile, photoFiles, videoFiles } = splitFiles(req);
     const featuredVal = featured === 'true' || featured === true;
 
     const existing = await db.query('SELECT cover_image, profile_image FROM artists WHERE id=$1', [id]);
-    const prev = existing.rows[0] || {};
+    if (!existing.rows.length) return res.status(404).json({ error: 'Artista não encontrado.' });
+    const prev = existing.rows[0];
 
     const coverUrl = coverFile ? await uploadFile(coverFile) : (prev.cover_image || null);
     const profileUrl = profileFile ? await uploadFile(profileFile) : (prev.profile_image || null);
 
-    const { rows } = await db.query(
+    await db.query(
       `UPDATE artists SET name=$1, project_name=$2, age=$3, musical_styles=$4, presskit_url=$5, career_years=$6,
        biography=$7, status=$8, featured=$9, cover_image=$10, profile_image=$11, updated_at=NOW()
-       WHERE id=$12 RETURNING *`,
+       WHERE id=$12`,
       [
         name,
         project_name || null,
@@ -130,45 +159,55 @@ router.put('/admin/:id', authenticate, artistUpload, async (req, res) => {
       ]
     );
 
-    if (rows.length === 0) return res.status(404).json({ error: 'Artista não encontrado.' });
-
-    const photoCount = await db.query('SELECT COUNT(*)::int AS count FROM artist_photos WHERE artist_id=$1', [id]);
-    const remaining = 4 - Number(photoCount.rows[0].count);
-    for (const file of photoFiles.slice(0, remaining)) {
-      const photoUrl = await uploadFile(file);
-      await db.query('INSERT INTO artist_photos (artist_id, image) VALUES ($1, $2)', [id, photoUrl]);
+    if (photoFiles.length > 0) {
+      const count = await db.query('SELECT COUNT(*)::int AS count FROM artist_photos WHERE artist_id=$1', [id]);
+      const remaining = MAX_PHOTOS - Number(count.rows[0].count);
+      await uploadAndInsertPhotos(id, photoFiles.slice(0, remaining));
     }
 
-    const { rows: full } = await db.query(
-      `SELECT a.*, COALESCE(json_agg(json_build_object('id', ap.id, 'image', ap.image) ORDER BY ap.created_at) FILTER (WHERE ap.id IS NOT NULL), '[]') AS photos
-       FROM artists a LEFT JOIN artist_photos ap ON ap.artist_id = a.id WHERE a.id=$1 GROUP BY a.id`,
-      [id]
-    );
+    if (videoFiles.length > 0) {
+      const count = await db.query('SELECT COUNT(*)::int AS count FROM artist_videos WHERE artist_id=$1', [id]);
+      const remaining = MAX_VIDEOS - Number(count.rows[0].count);
+      await uploadAndInsertVideos(id, videoFiles.slice(0, remaining));
+    }
+
+    const { rows: full } = await db.query(`${SELECT_WITH_MEDIA} WHERE a.id=$1`, [id]);
     res.json(full[0]);
   } catch (error) {
-    console.error('Erro ao atualizar artista:', error);
-    res.status(500).json({ error: 'Erro interno.' });
+    console.error('Erro ao atualizar artista:', error?.message || error);
+    res.status(500).json({ error: error?.message || 'Erro interno.' });
   }
 });
 
-// Admin — excluir foto individual
+// ── Admin: excluir foto individual ─────────────────────────────
 router.delete('/admin/photos/:photoId', authenticate, async (req, res) => {
   try {
     await db.query('DELETE FROM artist_photos WHERE id=$1', [req.params.photoId]);
     res.status(204).send();
   } catch (error) {
-    console.error('Erro ao excluir foto:', error);
+    console.error('Erro ao excluir foto:', error?.message);
     res.status(500).json({ error: 'Erro interno.' });
   }
 });
 
-// Admin — excluir artista
+// ── Admin: excluir vídeo individual ────────────────────────────
+router.delete('/admin/videos/:videoId', authenticate, async (req, res) => {
+  try {
+    await db.query('DELETE FROM artist_videos WHERE id=$1', [req.params.videoId]);
+    res.status(204).send();
+  } catch (error) {
+    console.error('Erro ao excluir video:', error?.message);
+    res.status(500).json({ error: 'Erro interno.' });
+  }
+});
+
+// ── Admin: excluir artista ─────────────────────────────────────
 router.delete('/admin/:id', authenticate, async (req, res) => {
   try {
     await db.query('DELETE FROM artists WHERE id=$1', [req.params.id]);
     res.status(204).send();
   } catch (error) {
-    console.error('Erro ao excluir artista:', error);
+    console.error('Erro ao excluir artista:', error?.message);
     res.status(500).json({ error: 'Erro interno.' });
   }
 });
