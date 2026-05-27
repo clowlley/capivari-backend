@@ -69,4 +69,20 @@ app.use('/api/displays', require('./routes/displays'));
 
 app.get('/api/ping', (req, res) => res.json({ message: 'pong' }));
 
+// Error handler global — captura erros do multer/cloudinary que escapam dos handlers
+// eslint-disable-next-line no-unused-vars
+app.use((err, req, res, _next) => {
+  console.error('[global error]', err?.code, err?.field, err?.message);
+  if (err?.code === 'LIMIT_FILE_SIZE') {
+    return res.status(413).json({ error: 'Arquivo grande demais (máx 25MB)' });
+  }
+  if (err?.code === 'LIMIT_UNEXPECTED_FILE') {
+    return res.status(400).json({ error: `Campo de arquivo inesperado: ${err.field || ''}` });
+  }
+  if (err?.message?.startsWith('Extensão não permitida') || err?.message?.startsWith('Tipo MIME')) {
+    return res.status(400).json({ error: err.message });
+  }
+  res.status(500).json({ error: err?.message || 'Erro interno' });
+});
+
 module.exports = app;

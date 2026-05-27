@@ -92,9 +92,15 @@ router.post('/admin', authenticate, productUpload, async (req, res) => {
     );
     const productId = rows[0].id;
 
-    for (const file of photoFiles) {
-      const url = await uploadFile(file);
-      await db.query('INSERT INTO product_photos (product_id, image) VALUES ($1, $2)', [productId, url]);
+    for (let i = 0; i < photoFiles.length; i++) {
+      try {
+        const file = photoFiles[i];
+        console.log(`[products POST] upload foto ${i + 1}/${photoFiles.length} — ${file.originalname} (${file.mimetype}, ${file.size} bytes)`);
+        const url = await uploadFile(file);
+        await db.query('INSERT INTO product_photos (product_id, image) VALUES ($1, $2)', [productId, url]);
+      } catch (photoErr) {
+        console.error(`[products POST] FALHA na foto ${i + 1}:`, photoErr?.message || photoErr);
+      }
     }
 
     const { rows: full } = await db.query(
@@ -103,8 +109,8 @@ router.post('/admin', authenticate, productUpload, async (req, res) => {
     );
     res.status(201).json(full[0]);
   } catch (err) {
-    console.error('Erro ao criar produto:', err);
-    res.status(500).json({ error: 'Erro ao criar produto.' });
+    console.error('Erro ao criar produto:', err?.message || err);
+    res.status(500).json({ error: err?.message || 'Erro ao criar produto.' });
   }
 });
 
@@ -135,9 +141,16 @@ router.put('/admin/:id', authenticate, productUpload, async (req, res) => {
     if (photoFiles.length > 0) {
       const count = await db.query('SELECT COUNT(*)::int AS count FROM product_photos WHERE product_id=$1', [id]);
       const remaining = MAX_PHOTOS - Number(count.rows[0].count);
-      for (const file of photoFiles.slice(0, remaining)) {
-        const url = await uploadFile(file);
-        await db.query('INSERT INTO product_photos (product_id, image) VALUES ($1, $2)', [id, url]);
+      const toUpload = photoFiles.slice(0, remaining);
+      for (let i = 0; i < toUpload.length; i++) {
+        try {
+          const file = toUpload[i];
+          console.log(`[products PUT] upload foto ${i + 1}/${toUpload.length} — ${file.originalname} (${file.mimetype}, ${file.size} bytes)`);
+          const url = await uploadFile(file);
+          await db.query('INSERT INTO product_photos (product_id, image) VALUES ($1, $2)', [id, url]);
+        } catch (photoErr) {
+          console.error(`[products PUT] FALHA na foto ${i + 1}:`, photoErr?.message || photoErr);
+        }
       }
     }
 
@@ -147,8 +160,8 @@ router.put('/admin/:id', authenticate, productUpload, async (req, res) => {
     );
     res.json(full[0]);
   } catch (err) {
-    console.error('Erro ao atualizar produto:', err);
-    res.status(500).json({ error: 'Erro ao atualizar produto.' });
+    console.error('Erro ao atualizar produto:', err?.message || err);
+    res.status(500).json({ error: err?.message || 'Erro ao atualizar produto.' });
   }
 });
 
