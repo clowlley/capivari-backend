@@ -1,4 +1,5 @@
 const { v2: cloudinary } = require('cloudinary');
+const { compressMedia } = require('./media');
 
 cloudinary.config({
   cloud_name: process.env.CLOUDINARY_CLOUD_NAME,
@@ -29,10 +30,12 @@ function uploadBuffer(buffer, { folder = FOLDER, resourceType = 'image' } = {}) 
 
 async function uploadFile(file, opts = {}) {
   if (!file || !file.buffer) return null;
-  const mime = file.mimetype || '';
+  // Comprime/converte localmente (ffmpeg) antes de subir, reduzindo o tamanho
+  const processed = await compressMedia(file);
+  const mime = processed.mimetype || '';
   // Cloudinary: 'video' resource_type cobre tanto vídeo quanto áudio
   const isMedia = mime.startsWith('video/') || mime.startsWith('audio/');
-  const result = await uploadBuffer(file.buffer, {
+  const result = await uploadBuffer(processed.buffer, {
     ...opts,
     resourceType: isMedia ? 'video' : 'image',
   });

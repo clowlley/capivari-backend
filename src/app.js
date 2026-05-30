@@ -74,7 +74,7 @@ app.get('/api/ping', (req, res) => res.json({ message: 'pong' }));
 app.use((err, req, res, _next) => {
   console.error('[global error]', err?.code, err?.field, err?.message);
   if (err?.code === 'LIMIT_FILE_SIZE') {
-    return res.status(413).json({ error: 'Arquivo grande demais (máx 25MB)' });
+    return res.status(413).json({ error: 'Arquivo grande demais (máx 80MB)' });
   }
   if (err?.code === 'LIMIT_UNEXPECTED_FILE') {
     return res.status(400).json({ error: `Campo de arquivo inesperado: ${err.field || ''}` });

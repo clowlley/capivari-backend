@@ -2,11 +2,22 @@ const express = require('express');
 const router = express.Router();
 const db = require('../db');
 const authenticateUser = require('../middleware/authenticate-user');
+const optionalAuth = require('../middleware/optional-auth');
 const upload = require('../middleware/upload');
+const createUserRateLimit = require('../middleware/user-rate-limit');
 const { uploadFile } = require('../lib/cloudinary');
 
-// Toda a área de comunidade exige usuário logado
-router.use(authenticateUser);
+// Leitura é pública (optionalAuth); escrita/curtida/moderação exigem login (authenticateUser).
+
+// Limites de conteúdo (anti-spam / sanidade)
+const MAX_TITLE = 160;
+const MAX_TOPIC_CONTENT = 20000; // post
+const MAX_REPLY_CONTENT = 10000; // comentário
+
+// Limitadores anti-spam por usuário
+const topicLimiter = createUserRateLimit({ windowMs: 10 * 60 * 1000, max: 6, message: 'Você criou tópicos demais. Aguarde alguns minutos.' });
+const replyLimiter = createUserRateLimit({ windowMs: 10 * 60 * 1000, max: 25, message: 'Você enviou respostas demais. Aguarde um momento.' });
+const likeLimiter = createUserRateLimit({ windowMs: 60 * 1000, max: 50, message: 'Muitas ações seguidas. Aguarde um instante.' });
 
 function isOwnerOrAdmin(req, ownerId) {
   return req.user.id === ownerId || req.user.role === 'admin';
@@ -18,7 +29,7 @@ function requireAdmin(req, res, next) {
 }
 
 // ── Categorias ──
-router.get('/categories', async (req, res) => {
+router.get('/categories', optionalAuth, async (req, res) => {
   try {
     const { rows } = await db.query(`
       SELECT c.id, c.name, c.slug, c.description, c.position,
@@ -33,10 +44,10 @@ router.get('/categories', async (req, res) => {
 });
 
 // ── Listar tópicos (opcionalmente por categoria via ?category=slug) ──
-router.get('/topics', async (req, res) => {
+router.get('/topics', optionalAuth, async (req, res) => {
   try {
     const { category } = req.query;
-    const params = [req.user.id];
+    const params = [req.user?.id || 0];
     const conditions = [`t.status = 'approved'`];
     if (typeof category === 'string' && category.trim()) {
       params.push(category.trim());
@@ -63,8 +74,9 @@ router.get('/topics', async (req, res) => {
 });
 
 // ── Detalhe de um tópico + respostas ──
-router.get('/topics/:id', async (req, res) => {
+router.get('/topics/:id', optionalAuth, async (req, res) => {
   try {
+    const uid = req.user?.id || 0;
     const { rows } = await db.query(`
       SELECT t.id, t.title, t.content, t.image_url, t.status, t.created_at, t.updated_at,
         c.id AS category_id, c.name AS category_name, c.slug AS category_slug,
@@ -75,11 +87,11 @@ router.get('/topics/:id', async (req, res) => {
       JOIN forum_categories c ON c.id = t.category_id
       JOIN users u ON u.id = t.user_id
       WHERE t.id = $1
-    `, [req.params.id, req.user.id]);
+    `, [req.params.id, uid]);
     const topic = rows[0];
     if (!topic) return res.status(404).json({ error: 'Tópico não encontrado.' });
     // Tópico pendente só é visível para o autor ou admin
-    if (topic.status !== 'approved' && !isOwnerOrAdmin(req, topic.author_id)) {
+    if (topic.status !== 'approved' && !(req.user && isOwnerOrAdmin(req, topic.author_id))) {
       return res.status(404).json({ error: 'Tópico não encontrado.' });
     }
 
@@ -92,7 +104,7 @@ router.get('/topics/:id', async (req, res) => {
       JOIN users u ON u.id = r.user_id
       WHERE r.topic_id = $1
       ORDER BY r.created_at ASC
-    `, [req.params.id, req.user.id]);
+    `, [req.params.id, uid]);
 
     res.json({ ...topic, replies });
   } catch {
@@ -100,15 +112,38 @@ router.get('/topics/:id', async (req, res) => {
   }
 });
 
+// ── Membros mais ativos (ranking por contribuições) ──
+router.get('/members/active', async (req, res) => {
+  try {
+    const { rows } = await db.query(`
+      SELECT u.id, u.name, u.avatar_url,
+        (
+          (SELECT COUNT(*) FROM forum_topics t WHERE t.user_id = u.id AND t.status = 'approved')
+          + (SELECT COUNT(*) FROM forum_replies r WHERE r.user_id = u.id)
+        )::int AS contributions
+      FROM users u
+      WHERE EXISTS (SELECT 1 FROM forum_topics t WHERE t.user_id = u.id AND t.status = 'approved')
+         OR EXISTS (SELECT 1 FROM forum_replies r WHERE r.user_id = u.id)
+      ORDER BY contributions DESC, u.name ASC
+      LIMIT 8
+    `);
+    res.json(rows);
+  } catch {
+    res.status(500).json({ error: 'Erro ao buscar membros.' });
+  }
+});
+
 // ── Criar tópico ──
-router.post('/topics', upload.single('image'), async (req, res) => {
+router.post('/topics', authenticateUser, topicLimiter, upload.single('image'), async (req, res) => {
   try {
     const { category_id, title, content } = req.body;
     if (!category_id || typeof title !== 'string' || typeof content !== 'string') {
       return res.status(400).json({ error: 'Dados inválidos.' });
     }
     if (title.trim().length < 3) return res.status(400).json({ error: 'Título muito curto.' });
+    if (title.trim().length > MAX_TITLE) return res.status(400).json({ error: `Título longo demais (máx ${MAX_TITLE}).` });
     if (content.trim().length < 1) return res.status(400).json({ error: 'Escreva algo no tópico.' });
+    if (content.trim().length > MAX_TOPIC_CONTENT) return res.status(400).json({ error: `Texto longo demais (máx ${MAX_TOPIC_CONTENT} caracteres).` });
 
     const cat = await db.query('SELECT id FROM forum_categories WHERE id = $1', [category_id]);
     if (cat.rows.length === 0) return res.status(400).json({ error: 'Categoria inválida.' });
@@ -129,7 +164,7 @@ router.post('/topics', upload.single('image'), async (req, res) => {
 });
 
 // ── Editar tópico (autor ou admin) ──
-router.put('/topics/:id', upload.single('image'), async (req, res) => {
+router.put('/topics/:id', authenticateUser, upload.single('image'), async (req, res) => {
   try {
     const { rows } = await db.query('SELECT user_id FROM forum_topics WHERE id = $1', [req.params.id]);
     if (rows.length === 0) return res.status(404).json({ error: 'Tópico não encontrado.' });
@@ -139,9 +174,11 @@ router.put('/topics/:id', upload.single('image'), async (req, res) => {
     const values = [];
     let i = 1;
     if (typeof req.body.title === 'string' && req.body.title.trim()) {
+      if (req.body.title.trim().length > MAX_TITLE) return res.status(400).json({ error: `Título longo demais (máx ${MAX_TITLE}).` });
       updates.push(`title = $${i++}`); values.push(req.body.title.trim());
     }
     if (typeof req.body.content === 'string' && req.body.content.trim()) {
+      if (req.body.content.trim().length > MAX_TOPIC_CONTENT) return res.status(400).json({ error: `Texto longo demais (máx ${MAX_TOPIC_CONTENT} caracteres).` });
       updates.push(`content = $${i++}`); values.push(req.body.content.trim());
     }
     if (req.file) {
@@ -159,7 +196,7 @@ router.put('/topics/:id', upload.single('image'), async (req, res) => {
 });
 
 // ── Excluir tópico (autor ou admin) ──
-router.delete('/topics/:id', async (req, res) => {
+router.delete('/topics/:id', authenticateUser, async (req, res) => {
   try {
     const { rows } = await db.query('SELECT user_id FROM forum_topics WHERE id = $1', [req.params.id]);
     if (rows.length === 0) return res.status(404).json({ error: 'Tópico não encontrado.' });
@@ -172,7 +209,7 @@ router.delete('/topics/:id', async (req, res) => {
 });
 
 // ── Curtir / descurtir tópico ──
-router.post('/topics/:id/like', async (req, res) => {
+router.post('/topics/:id/like', authenticateUser, likeLimiter, async (req, res) => {
   try {
     const existing = await db.query(
       'SELECT 1 FROM forum_topic_likes WHERE topic_id = $1 AND user_id = $2',
@@ -191,12 +228,15 @@ router.post('/topics/:id/like', async (req, res) => {
 });
 
 // ── Criar resposta ──
-router.post('/topics/:id/replies', upload.single('image'), async (req, res) => {
+router.post('/topics/:id/replies', authenticateUser, replyLimiter, upload.single('image'), async (req, res) => {
   try {
     const topic = await db.query('SELECT id FROM forum_topics WHERE id = $1', [req.params.id]);
     if (topic.rows.length === 0) return res.status(404).json({ error: 'Tópico não encontrado.' });
     if (typeof req.body.content !== 'string' || req.body.content.trim().length < 1) {
       return res.status(400).json({ error: 'Escreva uma resposta.' });
+    }
+    if (req.body.content.trim().length > MAX_REPLY_CONTENT) {
+      return res.status(400).json({ error: `Resposta longa demais (máx ${MAX_REPLY_CONTENT} caracteres).` });
     }
     let imageUrl = null;
     if (req.file) imageUrl = await uploadFile(req.file, { folder: 'capivari/community' });
@@ -211,7 +251,7 @@ router.post('/topics/:id/replies', upload.single('image'), async (req, res) => {
 });
 
 // ── Editar resposta ──
-router.put('/replies/:id', upload.single('image'), async (req, res) => {
+router.put('/replies/:id', authenticateUser, upload.single('image'), async (req, res) => {
   try {
     const { rows } = await db.query('SELECT user_id FROM forum_replies WHERE id = $1', [req.params.id]);
     if (rows.length === 0) return res.status(404).json({ error: 'Resposta não encontrada.' });
@@ -221,6 +261,7 @@ router.put('/replies/:id', upload.single('image'), async (req, res) => {
     const values = [];
     let i = 1;
     if (typeof req.body.content === 'string' && req.body.content.trim()) {
+      if (req.body.content.trim().length > MAX_REPLY_CONTENT) return res.status(400).json({ error: `Resposta longa demais (máx ${MAX_REPLY_CONTENT} caracteres).` });
       updates.push(`content = $${i++}`); values.push(req.body.content.trim());
     }
     if (req.file) {
@@ -238,7 +279,7 @@ router.put('/replies/:id', upload.single('image'), async (req, res) => {
 });
 
 // ── Excluir resposta ──
-router.delete('/replies/:id', async (req, res) => {
+router.delete('/replies/:id', authenticateUser, async (req, res) => {
   try {
     const { rows } = await db.query('SELECT user_id FROM forum_replies WHERE id = $1', [req.params.id]);
     if (rows.length === 0) return res.status(404).json({ error: 'Resposta não encontrada.' });
@@ -251,7 +292,7 @@ router.delete('/replies/:id', async (req, res) => {
 });
 
 // ── Curtir / descurtir resposta ──
-router.post('/replies/:id/like', async (req, res) => {
+router.post('/replies/:id/like', authenticateUser, likeLimiter, async (req, res) => {
   try {
     const existing = await db.query(
       'SELECT 1 FROM forum_reply_likes WHERE reply_id = $1 AND user_id = $2',
@@ -274,7 +315,7 @@ router.post('/replies/:id/like', async (req, res) => {
 // ══════════════════════════════════════════════
 
 // Contador de pendências (badge de notificação)
-router.get('/moderation/count', requireAdmin, async (req, res) => {
+router.get('/moderation/count', authenticateUser, requireAdmin, async (req, res) => {
   try {
     const { rows } = await db.query(`SELECT COUNT(*)::int AS pending FROM forum_topics WHERE status = 'pending'`);
     res.json({ pending: rows[0].pending });
@@ -284,7 +325,7 @@ router.get('/moderation/count', requireAdmin, async (req, res) => {
 });
 
 // Fila de tópicos pendentes
-router.get('/moderation/topics', requireAdmin, async (req, res) => {
+router.get('/moderation/topics', authenticateUser, requireAdmin, async (req, res) => {
   try {
     const { rows } = await db.query(`
       SELECT t.id, t.title, t.content, t.image_url, t.created_at,
@@ -303,7 +344,7 @@ router.get('/moderation/topics', requireAdmin, async (req, res) => {
 });
 
 // Aprovar tópico → libera na comunidade
-router.post('/moderation/topics/:id/approve', requireAdmin, async (req, res) => {
+router.post('/moderation/topics/:id/approve', authenticateUser, requireAdmin, async (req, res) => {
   try {
     const { rowCount } = await db.query(
       `UPDATE forum_topics SET status = 'approved', updated_at = NOW() WHERE id = $1 AND status = 'pending'`,
@@ -317,7 +358,7 @@ router.post('/moderation/topics/:id/approve', requireAdmin, async (req, res) => 
 });
 
 // Rejeitar tópico → remove
-router.post('/moderation/topics/:id/reject', requireAdmin, async (req, res) => {
+router.post('/moderation/topics/:id/reject', authenticateUser, requireAdmin, async (req, res) => {
   try {
     const { rowCount } = await db.query(`DELETE FROM forum_topics WHERE id = $1 AND status = 'pending'`, [req.params.id]);
     if (rowCount === 0) return res.status(404).json({ error: 'Tópico não encontrado ou já moderado.' });

@@ -14,7 +14,7 @@ const ALLOWED_MIME = new Set([
   'audio/mp4', 'audio/x-m4a', 'audio/ogg', 'audio/aac',
 ]);
 
-const MAX_FILE_SIZE = 25 * 1024 * 1024; // 25MB
+const MAX_FILE_SIZE = 80 * 1024 * 1024; // 80MB (vídeos são comprimidos após o upload)
 
 // Memory storage: arquivos chegam como buffer e são enviados para Cloudinary
 const storage = multer.memoryStorage();
