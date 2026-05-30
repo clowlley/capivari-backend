@@ -455,4 +455,40 @@ router.post('/moderation/topics/:id/reject', authenticateUser, requireAdmin, asy
   }
 });
 
+function parseIds(body) {
+  return Array.isArray(body?.ids)
+    ? [...new Set(body.ids.map(Number).filter((n) => Number.isInteger(n) && n > 0))]
+    : [];
+}
+
+// Aprovar em massa
+router.post('/moderation/topics/bulk-approve', authenticateUser, requireAdmin, async (req, res) => {
+  try {
+    const ids = parseIds(req.body);
+    if (ids.length === 0) return res.status(400).json({ error: 'Nenhum tópico selecionado.' });
+    const { rowCount } = await db.query(
+      `UPDATE forum_topics SET status = 'approved', updated_at = NOW() WHERE id = ANY($1) AND status = 'pending'`,
+      [ids]
+    );
+    res.json({ approved: rowCount });
+  } catch {
+    res.status(500).json({ error: 'Erro ao aprovar em massa.' });
+  }
+});
+
+// Rejeitar em massa
+router.post('/moderation/topics/bulk-reject', authenticateUser, requireAdmin, async (req, res) => {
+  try {
+    const ids = parseIds(req.body);
+    if (ids.length === 0) return res.status(400).json({ error: 'Nenhum tópico selecionado.' });
+    const { rowCount } = await db.query(
+      `DELETE FROM forum_topics WHERE id = ANY($1) AND status = 'pending'`,
+      [ids]
+    );
+    res.json({ rejected: rowCount });
+  } catch {
+    res.status(500).json({ error: 'Erro ao rejeitar em massa.' });
+  }
+});
+
 module.exports = router;
