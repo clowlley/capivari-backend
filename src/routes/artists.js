@@ -4,7 +4,7 @@ const authenticate = require('../middleware/authenticate');
 const upload = require('../middleware/upload');
 const { uploadFile } = require('../lib/cloudinary');
 
-const MAX_PHOTOS = 4;
+const MAX_PHOTOS = 10;
 const MAX_VIDEOS = 10;
 const MAX_TRACKS = 20;
 

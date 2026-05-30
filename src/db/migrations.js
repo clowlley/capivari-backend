@@ -39,6 +39,7 @@ async function initializeDatabase() {
     )
   `);
   await db.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS role VARCHAR(20) DEFAULT 'user'`);
+  await db.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS avatar_url TEXT`);
 
   // Converte colunas ENUM para VARCHAR se necessário
   await db.query(`
@@ -175,6 +176,32 @@ async function initializeDatabase() {
     )
   `);
   await db.query(`ALTER TABLE projects ADD COLUMN IF NOT EXISTS video_url VARCHAR(500)`);
+  await db.query(`ALTER TABLE projects ADD COLUMN IF NOT EXISTS updated_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()`);
+  await db.query(`
+    CREATE TABLE IF NOT EXISTS project_photos (
+      id SERIAL PRIMARY KEY,
+      project_id INTEGER REFERENCES projects(id) ON DELETE CASCADE,
+      image TEXT NOT NULL,
+      created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
+    )
+  `);
+  await db.query(`
+    CREATE TABLE IF NOT EXISTS project_videos (
+      id SERIAL PRIMARY KEY,
+      project_id INTEGER REFERENCES projects(id) ON DELETE CASCADE,
+      video_url TEXT NOT NULL,
+      created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
+    )
+  `);
+  await db.query(`
+    CREATE TABLE IF NOT EXISTS project_tracks (
+      id SERIAL PRIMARY KEY,
+      project_id INTEGER REFERENCES projects(id) ON DELETE CASCADE,
+      audio_url TEXT NOT NULL,
+      title VARCHAR(200),
+      created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
+    )
+  `);
 
   // Site Settings
   await db.query(`
