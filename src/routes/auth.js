@@ -22,6 +22,8 @@ function signToken(user) {
   );
 }
 
+const MAX_BIO = 500;
+
 function publicUser(user) {
   return {
     id: user.id,
@@ -29,6 +31,7 @@ function publicUser(user) {
     name: user.name,
     role: user.role,
     avatar_url: user.avatar_url || null,
+    bio: user.bio || null,
   };
 }
 
@@ -40,7 +43,7 @@ router.post('/login', rateLimit, async (req, res) => {
     }
 
     const { rows } = await db.query(
-      'SELECT id, email, password, name, role, avatar_url FROM users WHERE email = $1',
+      'SELECT id, email, password, name, role, avatar_url, bio FROM users WHERE email = $1',
       [email.toLowerCase().trim()]
     );
     const user = rows[0];
@@ -91,7 +94,7 @@ router.post('/register', rateLimit, async (req, res) => {
     const { rows } = await db.query(
       `INSERT INTO users (email, password, name, role)
        VALUES ($1, $2, $3, 'user')
-       RETURNING id, email, name, role, avatar_url`,
+       RETURNING id, email, name, role, avatar_url, bio`,
       [cleanEmail, hashedPassword, cleanName]
     );
     const user = rows[0];
@@ -107,7 +110,7 @@ router.post('/register', rateLimit, async (req, res) => {
 router.get('/me', authenticateUser, async (req, res) => {
   try {
     const { rows } = await db.query(
-      'SELECT id, email, name, role, avatar_url FROM users WHERE id = $1',
+      'SELECT id, email, name, role, avatar_url, bio FROM users WHERE id = $1',
       [req.user.id]
     );
     const user = rows[0];
@@ -122,7 +125,7 @@ router.get('/me', authenticateUser, async (req, res) => {
 router.put('/me', authenticateUser, upload.single('avatar'), async (req, res) => {
   try {
     const { rows: current } = await db.query(
-      'SELECT id, email, password, name, role, avatar_url FROM users WHERE id = $1',
+      'SELECT id, email, password, name, role, avatar_url, bio FROM users WHERE id = $1',
       [req.user.id]
     );
     const user = current[0];
@@ -163,6 +166,13 @@ router.put('/me', authenticateUser, upload.single('avatar'), async (req, res) =>
       values.push(bcrypt.hashSync(req.body.newPassword, 10));
     }
 
+    if (typeof req.body.bio === 'string') {
+      const cleanBio = req.body.bio.trim();
+      if (cleanBio.length > MAX_BIO) return res.status(400).json({ error: `Bio longa demais (máx ${MAX_BIO}).` });
+      updates.push(`bio = $${i++}`);
+      values.push(cleanBio || null);
+    }
+
     if (req.file) {
       const avatarUrl = await uploadFile(req.file, { folder: 'capivari/avatars' });
       updates.push(`avatar_url = $${i++}`);
@@ -175,7 +185,7 @@ router.put('/me', authenticateUser, upload.single('avatar'), async (req, res) =>
 
     values.push(user.id);
     const { rows } = await db.query(
-      `UPDATE users SET ${updates.join(', ')} WHERE id = $${i} RETURNING id, email, name, role, avatar_url`,
+      `UPDATE users SET ${updates.join(', ')} WHERE id = $${i} RETURNING id, email, name, role, avatar_url, bio`,
       values
     );
     res.json(publicUser(rows[0]));

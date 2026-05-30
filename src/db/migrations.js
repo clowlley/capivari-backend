@@ -40,6 +40,18 @@ async function initializeDatabase() {
   `);
   await db.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS role VARCHAR(20) DEFAULT 'user'`);
   await db.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS avatar_url TEXT`);
+  await db.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS bio TEXT`);
+
+  // Seguidores (sistema de seguir usuários)
+  await db.query(`
+    CREATE TABLE IF NOT EXISTS user_follows (
+      follower_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+      following_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+      created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
+      PRIMARY KEY (follower_id, following_id),
+      CHECK (follower_id <> following_id)
+    )
+  `);
 
   // Converte colunas ENUM para VARCHAR se necessário
   await db.query(`
