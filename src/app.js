@@ -64,6 +64,7 @@ app.use('/api/settings', require('./routes/settings'));
 app.use('/api/admin', require('./routes/nlista'));
 app.use('/api/contact', require('./routes/contact'));
 app.use('/api/displays', require('./routes/displays'));
+app.use('/api/community', require('./routes/community'));
 
 // Rota de ping para teste
 

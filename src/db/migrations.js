@@ -309,6 +309,78 @@ async function initializeDatabase() {
     )
   `);
   await db.query(`ALTER TABLE contact_messages ADD COLUMN IF NOT EXISTS telefone VARCHAR(30)`);
+
+  // ── Comunidade / Fórum ──
+  await db.query(`
+    CREATE TABLE IF NOT EXISTS forum_categories (
+      id SERIAL PRIMARY KEY,
+      name VARCHAR(120) NOT NULL,
+      slug VARCHAR(120) UNIQUE NOT NULL,
+      description TEXT,
+      position INTEGER DEFAULT 0,
+      created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
+    )
+  `);
+  await db.query(`
+    CREATE TABLE IF NOT EXISTS forum_topics (
+      id SERIAL PRIMARY KEY,
+      category_id INTEGER NOT NULL REFERENCES forum_categories(id) ON DELETE CASCADE,
+      user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+      title VARCHAR(255) NOT NULL,
+      content TEXT NOT NULL,
+      image_url TEXT,
+      status VARCHAR(20) DEFAULT 'pending',
+      created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
+      updated_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
+    )
+  `);
+  await db.query(`ALTER TABLE forum_topics ADD COLUMN IF NOT EXISTS status VARCHAR(20) DEFAULT 'pending'`);
+  await db.query(`
+    CREATE TABLE IF NOT EXISTS forum_replies (
+      id SERIAL PRIMARY KEY,
+      topic_id INTEGER NOT NULL REFERENCES forum_topics(id) ON DELETE CASCADE,
+      user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+      content TEXT NOT NULL,
+      image_url TEXT,
+      created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
+      updated_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
+    )
+  `);
+  await db.query(`
+    CREATE TABLE IF NOT EXISTS forum_topic_likes (
+      topic_id INTEGER NOT NULL REFERENCES forum_topics(id) ON DELETE CASCADE,
+      user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+      created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
+      PRIMARY KEY (topic_id, user_id)
+    )
+  `);
+  await db.query(`
+    CREATE TABLE IF NOT EXISTS forum_reply_likes (
+      reply_id INTEGER NOT NULL REFERENCES forum_replies(id) ON DELETE CASCADE,
+      user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+      created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
+      PRIMARY KEY (reply_id, user_id)
+    )
+  `);
+
+  // Seed de categorias padrão (apenas se a tabela estiver vazia)
+  const { rows: catCount } = await db.query('SELECT COUNT(*)::int AS n FROM forum_categories');
+  if (catCount[0].n === 0) {
+    const defaults = [
+      ['Geral', 'geral', 'Assuntos gerais da comunidade Capivari', 1],
+      ['Música', 'musica', 'Artistas, line-up, recomendações e bastidores', 2],
+      ['Eventos', 'eventos', 'Programação, encontros e avisos', 3],
+      ['Caronas & Encontros', 'caronas', 'Combine caronas e pontos de encontro', 4],
+      ['Marketplace', 'marketplace', 'Compra, venda e troca entre a galera', 5],
+    ];
+    for (const [name, slug, description, position] of defaults) {
+      await db.query(
+        'INSERT INTO forum_categories (name, slug, description, position) VALUES ($1, $2, $3, $4)',
+        [name, slug, description, position]
+      );
+    }
+    console.log('Categorias do fórum criadas.');
+  }
 }
 
 module.exports = { initializeDatabase };
