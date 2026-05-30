@@ -28,6 +28,27 @@ function requireAdmin(req, res, next) {
   next();
 }
 
+const ACCENTS = new RegExp('[\\u0300-\\u036f]', 'g');
+function slugify(s) {
+  return String(s)
+    .normalize('NFD').replace(ACCENTS, '') // remove acentos
+    .toLowerCase().trim()
+    .replace(/[^a-z0-9]+/g, '-')
+    .replace(/(^-|-$)/g, '');
+}
+
+async function uniqueSlug(base) {
+  const root = base || 'categoria';
+  let slug = root;
+  let n = 1;
+  // eslint-disable-next-line no-await-in-loop
+  while ((await db.query('SELECT 1 FROM forum_categories WHERE slug = $1', [slug])).rows.length) {
+    n += 1;
+    slug = `${root}-${n}`;
+  }
+  return slug;
+}
+
 // ── Categorias ──
 router.get('/categories', optionalAuth, async (req, res) => {
   try {
@@ -307,6 +328,72 @@ router.post('/replies/:id/like', authenticateUser, likeLimiter, async (req, res)
     res.json({ liked: existing.rows.length === 0, like_count: rows[0].n });
   } catch {
     res.status(500).json({ error: 'Erro ao curtir.' });
+  }
+});
+
+// ══════════════════════════════════════════════
+//  CATEGORIAS — admin (criar / editar / excluir)
+// ══════════════════════════════════════════════
+
+router.post('/categories', authenticateUser, requireAdmin, async (req, res) => {
+  try {
+    const { name, description, position } = req.body;
+    if (typeof name !== 'string' || !name.trim()) {
+      return res.status(400).json({ error: 'Informe o nome da categoria.' });
+    }
+    if (name.trim().length > 120) return res.status(400).json({ error: 'Nome longo demais (máx 120).' });
+
+    const slug = await uniqueSlug(slugify(name));
+    const pos = position != null && !Number.isNaN(Number(position))
+      ? Number(position)
+      : (await db.query('SELECT COALESCE(MAX(position), 0) + 1 AS p FROM forum_categories')).rows[0].p;
+
+    const { rows } = await db.query(
+      'INSERT INTO forum_categories (name, slug, description, position) VALUES ($1, $2, $3, $4) RETURNING *',
+      [name.trim(), slug, (typeof description === 'string' && description.trim()) || null, pos]
+    );
+    res.status(201).json(rows[0]);
+  } catch {
+    res.status(500).json({ error: 'Erro ao criar categoria.' });
+  }
+});
+
+router.put('/categories/:id', authenticateUser, requireAdmin, async (req, res) => {
+  try {
+    const updates = [];
+    const values = [];
+    let i = 1;
+    if (typeof req.body.name === 'string' && req.body.name.trim()) {
+      if (req.body.name.trim().length > 120) return res.status(400).json({ error: 'Nome longo demais (máx 120).' });
+      updates.push(`name = $${i++}`); values.push(req.body.name.trim());
+    }
+    if (typeof req.body.description === 'string') {
+      updates.push(`description = $${i++}`); values.push(req.body.description.trim() || null);
+    }
+    if (req.body.position != null && !Number.isNaN(Number(req.body.position))) {
+      updates.push(`position = $${i++}`); values.push(Number(req.body.position));
+    }
+    if (updates.length === 0) return res.status(400).json({ error: 'Nada para atualizar.' });
+    values.push(req.params.id);
+    const { rows } = await db.query(
+      `UPDATE forum_categories SET ${updates.join(', ')} WHERE id = $${i} RETURNING *`,
+      values
+    );
+    if (rows.length === 0) return res.status(404).json({ error: 'Categoria não encontrada.' });
+    res.json(rows[0]);
+  } catch {
+    res.status(500).json({ error: 'Erro ao editar categoria.' });
+  }
+});
+
+// Excluir categoria (apaga em cascata os tópicos da categoria)
+router.delete('/categories/:id', authenticateUser, requireAdmin, async (req, res) => {
+  try {
+    const { rowCount } = await db.query('DELETE FROM forum_categories WHERE id = $1', [req.params.id]);
+    if (rowCount === 0) return res.status(404).json({ error: 'Categoria não encontrada.' });
+    res.json({ ok: true });
+  } catch {
+    res.status(500).json({ error: 'Erro ao excluir categoria.' });
   }
 });
 
