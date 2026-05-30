@@ -4,6 +4,7 @@ const db = require('../db');
 const authenticateUser = require('../middleware/authenticate-user');
 const optionalAuth = require('../middleware/optional-auth');
 const createUserRateLimit = require('../middleware/user-rate-limit');
+const { createNotification } = require('../lib/notify');
 
 const followLimiter = createUserRateLimit({ windowMs: 60 * 1000, max: 40, message: 'Muitas ações seguidas. Aguarde um instante.' });
 
@@ -67,6 +68,12 @@ router.get('/:id', optionalAuth, async (req, res) => {
         (SELECT COUNT(*)::int FROM forum_replies r WHERE r.user_id = u.id) AS reply_count,
         (SELECT COUNT(*)::int FROM user_follows f WHERE f.following_id = u.id) AS follower_count,
         (SELECT COUNT(*)::int FROM user_follows f WHERE f.follower_id = u.id) AS following_count,
+        (
+          (SELECT COUNT(*) FROM forum_topics t WHERE t.user_id = u.id AND t.status = 'approved')
+          + (SELECT COUNT(*) FROM forum_replies r WHERE r.user_id = u.id)
+          + (SELECT COUNT(*) FROM forum_topic_likes l WHERE l.user_id = u.id)
+          + (SELECT COUNT(*) FROM forum_reply_likes l WHERE l.user_id = u.id)
+        )::int AS interaction_count,
         EXISTS(SELECT 1 FROM user_follows f WHERE f.following_id = u.id AND f.follower_id = $2) AS is_following
       FROM users u
       WHERE u.id = $1
@@ -120,6 +127,7 @@ router.post('/:id/follow', authenticateUser, followLimiter, async (req, res) => 
       await db.query('DELETE FROM user_follows WHERE follower_id = $1 AND following_id = $2', [req.user.id, targetId]);
     } else {
       await db.query('INSERT INTO user_follows (follower_id, following_id) VALUES ($1, $2)', [req.user.id, targetId]);
+      await createNotification({ userId: targetId, actorId: req.user.id, type: 'follow' });
     }
     const { rows } = await db.query('SELECT COUNT(*)::int AS n FROM user_follows WHERE following_id = $1', [targetId]);
     res.json({ following: existing.rows.length === 0, follower_count: rows[0].n });

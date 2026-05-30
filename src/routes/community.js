@@ -6,6 +6,7 @@ const optionalAuth = require('../middleware/optional-auth');
 const upload = require('../middleware/upload');
 const createUserRateLimit = require('../middleware/user-rate-limit');
 const { uploadFile } = require('../lib/cloudinary');
+const { createNotification } = require('../lib/notify');
 
 // Leitura é pública (optionalAuth); escrita/curtida/moderação exigem login (authenticateUser).
 
@@ -240,6 +241,10 @@ router.post('/topics/:id/like', authenticateUser, likeLimiter, async (req, res) 
       await db.query('DELETE FROM forum_topic_likes WHERE topic_id = $1 AND user_id = $2', [req.params.id, req.user.id]);
     } else {
       await db.query('INSERT INTO forum_topic_likes (topic_id, user_id) VALUES ($1, $2)', [req.params.id, req.user.id]);
+      const owner = await db.query('SELECT user_id FROM forum_topics WHERE id = $1', [req.params.id]);
+      if (owner.rows[0]) {
+        await createNotification({ userId: owner.rows[0].user_id, actorId: req.user.id, type: 'topic_like', topicId: Number(req.params.id) });
+      }
     }
     const { rows } = await db.query('SELECT COUNT(*)::int AS n FROM forum_topic_likes WHERE topic_id = $1', [req.params.id]);
     res.json({ liked: existing.rows.length === 0, like_count: rows[0].n });
@@ -251,7 +256,7 @@ router.post('/topics/:id/like', authenticateUser, likeLimiter, async (req, res) 
 // ── Criar resposta ──
 router.post('/topics/:id/replies', authenticateUser, replyLimiter, upload.single('image'), async (req, res) => {
   try {
-    const topic = await db.query('SELECT id FROM forum_topics WHERE id = $1', [req.params.id]);
+    const topic = await db.query('SELECT id, user_id FROM forum_topics WHERE id = $1', [req.params.id]);
     if (topic.rows.length === 0) return res.status(404).json({ error: 'Tópico não encontrado.' });
     if (typeof req.body.content !== 'string' || req.body.content.trim().length < 1) {
       return res.status(400).json({ error: 'Escreva uma resposta.' });
@@ -265,6 +270,7 @@ router.post('/topics/:id/replies', authenticateUser, replyLimiter, upload.single
       INSERT INTO forum_replies (topic_id, user_id, content, image_url)
       VALUES ($1, $2, $3, $4) RETURNING id
     `, [req.params.id, req.user.id, req.body.content.trim(), imageUrl]);
+    await createNotification({ userId: topic.rows[0].user_id, actorId: req.user.id, type: 'topic_reply', topicId: Number(req.params.id), replyId: rows[0].id });
     res.status(201).json({ id: rows[0].id });
   } catch {
     res.status(500).json({ error: 'Erro ao responder.' });
@@ -323,6 +329,10 @@ router.post('/replies/:id/like', authenticateUser, likeLimiter, async (req, res)
       await db.query('DELETE FROM forum_reply_likes WHERE reply_id = $1 AND user_id = $2', [req.params.id, req.user.id]);
     } else {
       await db.query('INSERT INTO forum_reply_likes (reply_id, user_id) VALUES ($1, $2)', [req.params.id, req.user.id]);
+      const owner = await db.query('SELECT user_id, topic_id FROM forum_replies WHERE id = $1', [req.params.id]);
+      if (owner.rows[0]) {
+        await createNotification({ userId: owner.rows[0].user_id, actorId: req.user.id, type: 'reply_like', topicId: owner.rows[0].topic_id, replyId: Number(req.params.id) });
+      }
     }
     const { rows } = await db.query('SELECT COUNT(*)::int AS n FROM forum_reply_likes WHERE reply_id = $1', [req.params.id]);
     res.json({ liked: existing.rows.length === 0, like_count: rows[0].n });

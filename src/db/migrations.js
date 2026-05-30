@@ -375,6 +375,21 @@ async function initializeDatabase() {
     )
   `);
 
+  // Notificações (curtidas, respostas, novos seguidores) — depende das tabelas do fórum
+  await db.query(`
+    CREATE TABLE IF NOT EXISTS notifications (
+      id SERIAL PRIMARY KEY,
+      user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+      actor_id INTEGER REFERENCES users(id) ON DELETE CASCADE,
+      type VARCHAR(30) NOT NULL,
+      topic_id INTEGER REFERENCES forum_topics(id) ON DELETE CASCADE,
+      reply_id INTEGER REFERENCES forum_replies(id) ON DELETE CASCADE,
+      read BOOLEAN DEFAULT false,
+      created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
+    )
+  `);
+  await db.query(`CREATE INDEX IF NOT EXISTS idx_notifications_user ON notifications(user_id, read, created_at DESC)`);
+
   // Seed de categorias padrão (apenas se a tabela estiver vazia)
   const { rows: catCount } = await db.query('SELECT COUNT(*)::int AS n FROM forum_categories');
   if (catCount[0].n === 0) {
