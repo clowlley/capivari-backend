@@ -7,6 +7,56 @@ const createUserRateLimit = require('../middleware/user-rate-limit');
 
 const followLimiter = createUserRateLimit({ windowMs: 60 * 1000, max: 40, message: 'Muitas ações seguidas. Aguarde um instante.' });
 
+// ── Buscar / listar usuários ──
+router.get('/', optionalAuth, async (req, res) => {
+  try {
+    const viewer = req.user?.id || 0;
+    const q = typeof req.query.search === 'string' ? req.query.search.trim() : '';
+    const params = [viewer];
+    let where = '';
+    if (q) {
+      params.push(`%${q}%`);
+      where = `WHERE u.name ILIKE $${params.length}`;
+    }
+    const { rows } = await db.query(`
+      SELECT u.id, u.name, u.avatar_url, u.bio, u.role,
+        (SELECT COUNT(*)::int FROM user_follows f WHERE f.following_id = u.id) AS follower_count,
+        EXISTS(SELECT 1 FROM user_follows f WHERE f.following_id = u.id AND f.follower_id = $1) AS is_following
+      FROM users u
+      ${where}
+      ORDER BY follower_count DESC, u.name ASC
+      LIMIT 30
+    `, params);
+    res.json(rows);
+  } catch {
+    res.status(500).json({ error: 'Erro ao buscar usuários.' });
+  }
+});
+
+// ── Feed: tópicos dos usuários que sigo ──
+router.get('/me/feed', authenticateUser, async (req, res) => {
+  try {
+    const viewer = req.user.id;
+    const { rows } = await db.query(`
+      SELECT t.id, t.title, t.content, t.image_url, t.created_at, t.updated_at,
+        c.id AS category_id, c.name AS category_name, c.slug AS category_slug,
+        u.id AS author_id, u.name AS author_name, u.avatar_url AS author_avatar,
+        (SELECT COUNT(*)::int FROM forum_replies r WHERE r.topic_id = t.id) AS reply_count,
+        (SELECT COUNT(*)::int FROM forum_topic_likes l WHERE l.topic_id = t.id) AS like_count,
+        EXISTS(SELECT 1 FROM forum_topic_likes l WHERE l.topic_id = t.id AND l.user_id = $1) AS liked
+      FROM forum_topics t
+      JOIN forum_categories c ON c.id = t.category_id
+      JOIN users u ON u.id = t.user_id
+      WHERE t.status = 'approved'
+        AND t.user_id IN (SELECT following_id FROM user_follows WHERE follower_id = $1)
+      ORDER BY t.created_at DESC
+    `, [viewer]);
+    res.json(rows);
+  } catch {
+    res.status(500).json({ error: 'Erro ao buscar feed.' });
+  }
+});
+
 // ── Perfil público de um usuário ──
 router.get('/:id', optionalAuth, async (req, res) => {
   try {
